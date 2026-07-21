@@ -1,4 +1,6 @@
 import 'package:bb_mobile/core/themes/app_theme.dart';
+import 'package:bb_mobile/core/bitsquiggles/bitsquiggles_renderer_flutter.dart'
+    as bitsquiggles;
 import 'package:bb_mobile/core/widgets/dialog/blurred_dialog.dart';
 import 'package:bb_mobile/core/utils/build_context_x.dart';
 import 'package:bb_mobile/core/utils/logger.dart' show log;
@@ -70,7 +72,7 @@ class WalletDetailsScreen extends StatelessWidget {
                   vertical: 24,
                 ),
                 children: [
-                  _InfoField(
+                  _FingerprintField(
                     label: context.loc.walletDetailsWalletFingerprintLabel,
                     value: wallet.masterFingerprint,
                   ),
@@ -116,6 +118,60 @@ class WalletDetailsScreen extends StatelessWidget {
                 ],
               ),
       ),
+    );
+  }
+}
+
+class _FingerprintField extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _FingerprintField({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final fingerprint = value.length == 8
+        ? int.tryParse(value, radix: 16)
+        : null;
+
+    return Column(
+      crossAxisAlignment: .start,
+      children: [
+        BBText(
+          label,
+          style: context.font.bodyLarge?.copyWith(
+            color: context.appColors.textMuted,
+          ),
+        ),
+        const Gap(4),
+        Row(
+          children: [
+            if (fingerprint != null) ...[
+              Semantics(
+                image: true,
+                label: '$label: $value',
+                child: bitsquiggles.BitSquiggleView(
+                  visual: bitsquiggles.spec(
+                    fingerprint,
+                    bitsquiggles.BitSquiggleStyle.highContrast,
+                  ),
+                  width: 32,
+                  height: 44,
+                ),
+              ),
+              const Gap(12),
+            ],
+            Flexible(
+              child: BBText(
+                value,
+                style: context.font.bodyMedium?.copyWith(
+                  color: context.appColors.onSurface,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
