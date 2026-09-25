@@ -294,13 +294,19 @@ void main() {
           '@@review',
           'greeting_en',
           'greeting_fr',
+          'greeting_uniqueId',
           '@greeting',
           'count_en',
           'count_fr',
+          'count_uniqueId',
           '@count',
           'farewell_en',
           'farewell_fr',
+          'farewell_uniqueId',
         ]);
+        expect(review['greeting_uniqueId'], 1);
+        expect(review['count_uniqueId'], 2);
+        expect(review['farewell_uniqueId'], 3);
         review['greeting_fr'] = 'Salut';
         reviewFile.writeAsStringSync(
           '${const JsonEncoder.withIndent('  ').convert(review)}\n',
@@ -422,6 +428,60 @@ void main() {
       final review =
           jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
       expect(review['greeting_pt_BR'], 'Bonjour');
+    });
+
+    test('assigns matching base-language values the same unique ID', () {
+      writeLocale(
+        'en',
+        enTemplate.replaceFirst('"farewell": "Bye"', '"farewell": "Hello"'),
+      );
+      writeLocale('fr', frCompleteTemplate);
+      final reviewFile = File(p.join(tmp.path, 'review.json'));
+      final merge = run([
+        'merge-translation',
+        'en',
+        'fr',
+        '--merged-file',
+        reviewFile.path,
+      ]);
+      expect(merge.exitCode, 0, reason: merge.stderr.toString());
+
+      final review =
+          jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
+      expect(review['greeting_uniqueId'], 1);
+      expect(review['farewell_uniqueId'], 1);
+      expect(review['count_uniqueId'], 2);
+    });
+
+    test('rejects a review missing a required unique ID', () {
+      writeLocale('en', enTemplate);
+      writeLocale('fr', frCompleteTemplate);
+      final reviewFile = File(p.join(tmp.path, 'review.json'));
+      final merge = run([
+        'merge-translation',
+        'en',
+        'fr',
+        '--merged-file',
+        reviewFile.path,
+      ]);
+      expect(merge.exitCode, 0, reason: merge.stderr.toString());
+
+      final review =
+          jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
+      review.remove('greeting_uniqueId');
+      reviewFile.writeAsStringSync(
+        '${const JsonEncoder.withIndent('  ').convert(review)}\n',
+      );
+
+      final check = run([
+        'check-translation-review',
+        'en',
+        'fr',
+        '--merged-file',
+        reviewFile.path,
+      ]);
+      expect(check.exitCode, 1);
+      expect(check.stderr, contains('greeting_uniqueId'));
     });
   });
 

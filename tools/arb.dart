@@ -710,10 +710,12 @@ void _cmdMergeTranslation(List<String> args) {
       'secondaryLocale': paths.secondaryLocale,
     },
   };
+  final uniqueIdsByKey = _uniqueIdsByKey(sources.base);
 
   for (final key in _realKeysInOrder(sources.base)) {
     review['${key}_${paths.baseLocale}'] = sources.base[key];
     review['${key}_${paths.secondaryLocale}'] = sources.secondary[key];
+    review['${key}_uniqueId'] = uniqueIdsByKey[key];
     final metadata = sources.base['@$key'];
     if (metadata != null) review['@$key'] = metadata;
   }
@@ -879,12 +881,21 @@ _TranslationReviewValidation _validateTranslationReview(
   _validateReviewHeader(review, paths);
 
   final expectedKeys = <String>['@@review'];
+  final uniqueIdsByKey = _uniqueIdsByKey(sources.base);
   final reviewedSecondaryValues = <String, String>{};
   for (final key in _realKeysInOrder(sources.base)) {
     final baseReviewKey = '${key}_${paths.baseLocale}';
     final secondaryReviewKey = '${key}_${paths.secondaryLocale}';
+    final uniqueIdReviewKey = '${key}_uniqueId';
     expectedKeys.add(baseReviewKey);
     expectedKeys.add(secondaryReviewKey);
+    expectedKeys.add(uniqueIdReviewKey);
+    if (review[uniqueIdReviewKey] != uniqueIdsByKey[key]) {
+      throw ArbException(
+        'Unique ID "$uniqueIdReviewKey" in ${paths.reviewFile} is missing '
+        'or does not match the exact base-language value.',
+      );
+    }
 
     if (review[baseReviewKey] != sources.base[key]) {
       throw ArbException(
@@ -1020,6 +1031,22 @@ Iterable<String> _realKeysInOrder(Map<String, dynamic> map) sync* {
   for (final entry in map.entries) {
     if (!_isMetaKey(entry.key)) yield entry.key;
   }
+}
+
+Map<String, int> _uniqueIdsByKey(Map<String, dynamic> base) {
+  final uniqueIdsByBaseValue = <String, int>{};
+  final uniqueIdsByKey = <String, int>{};
+  var nextUniqueId = 1;
+
+  for (final key in _realKeysInOrder(base)) {
+    final baseValue = base[key] as String;
+    uniqueIdsByKey[key] = uniqueIdsByBaseValue.putIfAbsent(
+      baseValue,
+      () => nextUniqueId++,
+    );
+  }
+
+  return uniqueIdsByKey;
 }
 
 void _writeReviewFile(String reviewFile, Map<String, dynamic> review) {
