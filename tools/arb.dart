@@ -738,16 +738,43 @@ void _cmdCheckTranslationReview(List<String> args) {
 
 void _cmdUnmergeTranslation(List<String> args) {
   final paths = _translationReviewPaths(args);
-  final validation = _validateTranslationReview(paths);
-  var applied = 0;
+  final applyOriginal = _flag(args, '--apply-original');
+  final validation = _validateTranslationReview(
+    paths,
+    allowReviewedBaseChanges: applyOriginal,
+  );
+  var appliedSecondary = 0;
   for (final entry in validation.reviewedSecondaryValues.entries) {
     if (validation.secondary[entry.key] == entry.value) continue;
     _replaceValue(paths.secondaryFile, entry.key, entry.value);
-    applied++;
+    appliedSecondary++;
   }
 
+  if (!applyOriginal) {
+    print(
+      'translation review: applied $appliedSecondary value(s) to '
+      '${paths.secondaryFile}',
+    );
+    return;
+  }
+
+  var appliedOriginal = 0;
+  for (final entry in validation.reviewedBaseValues.entries) {
+    if (validation.base[entry.key] == entry.value) continue;
+    _replaceValue(paths.baseFile, entry.key, entry.value);
+    appliedOriginal++;
+  }
+  final updatedUniqueIds = <String, int>{};
+  for (final entry in validation.expectedUniqueIdsByKey.entries) {
+    if (validation.reviewedUniqueIdsByKey[entry.key] == entry.value) continue;
+    updatedUniqueIds['${entry.key}_uniqueId'] = entry.value;
+  }
+  _replaceIntegerValues(paths.reviewFile, updatedUniqueIds);
+
   print(
-    'translation review: applied $applied value(s) to ${paths.secondaryFile}',
+    'translation review: applied $appliedSecondary secondary-locale and '
+    '$appliedOriginal base-locale value(s); updated '
+    '${updatedUniqueIds.length} unique ID(s) in ${paths.reviewFile}',
   );
 }
 
@@ -768,12 +795,20 @@ class _TranslationReviewPaths {
 }
 
 class _TranslationReviewValidation {
+  final Map<String, dynamic> base;
   final Map<String, dynamic> secondary;
+  final Map<String, String> reviewedBaseValues;
   final Map<String, String> reviewedSecondaryValues;
+  final Map<String, int> reviewedUniqueIdsByKey;
+  final Map<String, int> expectedUniqueIdsByKey;
 
   _TranslationReviewValidation({
+    required this.base,
     required this.secondary,
+    required this.reviewedBaseValues,
     required this.reviewedSecondaryValues,
+    required this.reviewedUniqueIdsByKey,
+    required this.expectedUniqueIdsByKey,
   });
 }
 
@@ -873,16 +908,21 @@ _loadTranslationSources(_TranslationReviewPaths paths) {
 }
 
 _TranslationReviewValidation _validateTranslationReview(
-  _TranslationReviewPaths paths,
-) {
+  _TranslationReviewPaths paths, {
+  bool allowReviewedBaseChanges = false,
+}) {
   final sources = _loadTranslationSources(paths);
   _assertInvariant(paths.reviewFile);
   final review = _readMap(paths.reviewFile);
   _validateReviewHeader(review, paths);
 
   final expectedKeys = <String>['@@review'];
-  final uniqueIdsByKey = _uniqueIdsByKey(sources.base);
+  final reviewedBaseValues = <String, String>{};
   final reviewedSecondaryValues = <String, String>{};
+  final reviewedUniqueIdsByKey = <String, int>{};
+  final expectedUniqueIdsByKey = <String, int>{};
+  final uniqueIdsByBaseValue = <String, int>{};
+  var nextUniqueId = 1;
   for (final key in _realKeysInOrder(sources.base)) {
     final baseReviewKey = '${key}_${paths.baseLocale}';
     final secondaryReviewKey = '${key}_${paths.secondaryLocale}';
@@ -890,19 +930,41 @@ _TranslationReviewValidation _validateTranslationReview(
     expectedKeys.add(baseReviewKey);
     expectedKeys.add(secondaryReviewKey);
     expectedKeys.add(uniqueIdReviewKey);
-    if (review[uniqueIdReviewKey] != uniqueIdsByKey[key]) {
+    final reviewedBaseValue = review[baseReviewKey];
+    if (reviewedBaseValue is! String) {
       throw ArbException(
-        'Unique ID "$uniqueIdReviewKey" in ${paths.reviewFile} is missing '
-        'or does not match the exact base-language value.',
+        'Review value "$baseReviewKey" in ${paths.reviewFile} must be a '
+        'string.',
       );
     }
-
-    if (review[baseReviewKey] != sources.base[key]) {
+    if (!allowReviewedBaseChanges && reviewedBaseValue != sources.base[key]) {
       throw ArbException(
         'Base value "$baseReviewKey" in ${paths.reviewFile} no longer matches '
         '${paths.baseFile}. Regenerate the review before importing.',
       );
     }
+    reviewedBaseValues[key] = reviewedBaseValue;
+    final expectedUniqueId = uniqueIdsByBaseValue.putIfAbsent(
+      reviewedBaseValue,
+      () => nextUniqueId++,
+    );
+    expectedUniqueIdsByKey[key] = expectedUniqueId;
+    final reviewedUniqueId = review[uniqueIdReviewKey];
+    if (reviewedUniqueId is! int ||
+        reviewedUniqueId is bool ||
+        reviewedUniqueId < 1) {
+      throw ArbException(
+        'Unique ID "$uniqueIdReviewKey" in ${paths.reviewFile} must be a '
+        'positive integer.',
+      );
+    }
+    if (!allowReviewedBaseChanges && reviewedUniqueId != expectedUniqueId) {
+      throw ArbException(
+        'Unique ID "$uniqueIdReviewKey" in ${paths.reviewFile} does not '
+        'match the exact base-language value.',
+      );
+    }
+    reviewedUniqueIdsByKey[key] = reviewedUniqueId;
 
     final reviewedSecondaryValue = review[secondaryReviewKey];
     if (reviewedSecondaryValue is! String) {
@@ -912,7 +974,7 @@ _TranslationReviewValidation _validateTranslationReview(
       );
     }
     _validateMatchingPlaceholders(
-      sources.base[key] as String,
+      reviewedBaseValue,
       reviewedSecondaryValue,
       key,
       paths,
@@ -933,8 +995,12 @@ _TranslationReviewValidation _validateTranslationReview(
   _validateReviewKeys(review.keys.toList(), expectedKeys, paths.reviewFile);
 
   return _TranslationReviewValidation(
+    base: sources.base,
     secondary: sources.secondary,
+    reviewedBaseValues: reviewedBaseValues,
     reviewedSecondaryValues: reviewedSecondaryValues,
+    reviewedUniqueIdsByKey: reviewedUniqueIdsByKey,
+    expectedUniqueIdsByKey: expectedUniqueIdsByKey,
   );
 }
 
@@ -1325,23 +1391,34 @@ bool _renameKey(String file, String oldKey, String newKey) =>
       return true;
     });
 
-void _replaceValue(String file, String key, String value) {
+void _replaceValue(String file, String key, String value) =>
+    _replaceLiteralValues(file, {key: value});
+
+void _replaceIntegerValues(String file, Map<String, int> values) {
+  if (values.isEmpty) return;
+  _replaceLiteralValues(file, values);
+}
+
+void _replaceLiteralValues(String file, Map<String, Object> values) {
   _editLines(file, (lines) {
     final blocks = _blocks(lines);
-    final block = blocks.firstWhere(
-      (b) => b.key == key,
-      orElse: () => throw ArbException('Key "$key" not found in $file.'),
-    );
-    if (block.end - block.start != 1) {
-      throw ArbException(
-        'Value for "$key" in $file spans multiple lines; '
-        'refusing to auto-replace.',
-      );
+    final blocksByKey = {for (final block in blocks) block.key: block};
+    for (final entry in values.entries) {
+      final block = blocksByKey[entry.key];
+      if (block == null) {
+        throw ArbException('Key "${entry.key}" not found in $file.');
+      }
+      if (block.end - block.start != 1) {
+        throw ArbException(
+          'Value for "${entry.key}" in $file spans multiple lines; '
+          'refusing to auto-replace.',
+        );
+      }
+      final hadComma = lines[block.start].trimRight().endsWith(',');
+      var line = '  ${_jsonString(entry.key)}: ${jsonEncode(entry.value)}';
+      if (hadComma) line = '$line,';
+      lines[block.start] = line;
     }
-    final hadComma = lines[block.start].trimRight().endsWith(',');
-    var line = '  ${_jsonString(key)}: ${_jsonString(value)}';
-    if (hadComma) line = '$line,';
-    lines[block.start] = line;
     return true;
   });
 }
@@ -1528,6 +1605,7 @@ const _commandOptions = <String, Set<String>>{
     '--base-file',
     '--secondary-file',
     '--merged-file',
+    '--apply-original',
     '--dry-run',
   },
 };
@@ -1772,7 +1850,10 @@ Write commands (surgical; other keys are left byte-for-byte unchanged):
 
   unmerge-translation [BASE_LOCALE] SECONDARY_LOCALE
       [--base-file PATH] [--secondary-file PATH] [--merged-file PATH]
-      Validate then apply reviewed secondary-locale values in place.
+      [--apply-original]
+      Validate then apply reviewed secondary-locale values in place. With
+      --apply-original, also apply reviewed base-locale values and refresh
+      review IDs from the updated base-language text.
 
 Every write command accepts --dry-run: it runs all checks and reports which
 files would change, without writing anything.

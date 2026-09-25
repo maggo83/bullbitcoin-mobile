@@ -379,6 +379,58 @@ void main() {
     });
 
     test(
+      'applies reviewed base values and refreshes unique IDs when requested',
+      () {
+        writeLocale('en', enTemplate);
+        writeLocale('fr', frCompleteTemplate);
+        final reviewFile = File(p.join(tmp.path, 'review.json'));
+        final merge = run([
+          'merge-translation',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+        ]);
+        expect(merge.exitCode, 0, reason: merge.stderr.toString());
+
+        final review =
+            jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
+        review['farewell_en'] = 'Hello';
+        review['farewell_fr'] = 'Salut';
+        reviewFile.writeAsStringSync(
+          '${const JsonEncoder.withIndent('  ').convert(review)}\n',
+        );
+
+        final unmerge = run([
+          'unmerge-translation',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+          '--apply-original',
+        ]);
+        expect(unmerge.exitCode, 0, reason: unmerge.stderr.toString());
+        expect(readLocale('en'), contains('"farewell": "Hello"'));
+        expect(readLocale('fr'), contains('"farewell": "Salut"'));
+
+        final updatedReview =
+            jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
+        expect(updatedReview['greeting_uniqueId'], 1);
+        expect(updatedReview['farewell_uniqueId'], 1);
+        expect(updatedReview['count_uniqueId'], 2);
+
+        final check = run([
+          'check-translation-review',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+        ]);
+        expect(check.exitCode, 0, reason: check.stderr.toString());
+      },
+    );
+
+    test(
       'rejects a reviewed placeholder mismatch before touching the target',
       () {
         writeLocale('en', enTemplate);
