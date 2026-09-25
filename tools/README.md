@@ -1,7 +1,7 @@
 # tools/
 
-Developer scripts for this repo. Run everything through `fvm` (see `AGENTS.md`).
-Each script is documented in its own section below.
+Developer scripts for this repo. Each script is documented in its own section
+below.
 
 ## arb.dart — manage the `.arb` localization files
 
@@ -11,7 +11,7 @@ other key stays byte-for-byte unchanged and JSON never breaks. It refuses to edi
 a file that doesn't match the expected 2-space-per-top-level-key layout.
 
 ```
-fvm dart run tools/arb.dart <command>
+dart run tools/arb.dart <command>
 ```
 
 Read:
@@ -26,6 +26,7 @@ Read:
 | `audit-placeholders [--locale L] [--list]` | Values whose top-level `{placeholder}` tokens don't match the `en` template's — a near-certain bug, since a missing placeholder silently drops data at render time |
 | `dead [--list]` | Template keys with no apparent reference in `lib/` or `test/` (heuristic) |
 | `validate` | Parse every file and confirm the layout invariant |
+| `check-translation-review [BASE_LOCALE] SECONDARY_LOCALE [--base-file PATH] [--secondary-file PATH] [--merged-file PATH]` | Validate a side-by-side translation review without changing files |
 
 Write (other keys left untouched):
 
@@ -37,6 +38,8 @@ Write (other keys left untouched):
 | `set-meta KEY [--description ...] [--placeholders '{...}']` | Update an existing key's template metadata in place, without touching translations |
 | `rename OLD NEW` | Rename a key across every locale in place, preserving values + metadata |
 | `delete KEY` | Remove KEY and its `@KEY` metadata from every file |
+| `merge-translation [BASE_LOCALE] SECONDARY_LOCALE [--base-file PATH] [--secondary-file PATH] [--merged-file PATH] [--overwrite]` | Create a side-by-side review JSON document; the base locale defaults to `en` |
+| `unmerge-translation [BASE_LOCALE] SECONDARY_LOCALE [--base-file PATH] [--secondary-file PATH] [--merged-file PATH]` | Validate then apply changed reviewed values to the secondary locale |
 
 Unknown options are rejected rather than ignored, so a typo fails loudly — and
 an option that isn't valid for the specific command (e.g. `get KEY --description
@@ -51,9 +54,9 @@ currently produces. If `validate` starts failing repo-wide after a Flutter /
 `gen-l10n` / formatter bump, that output shape changed — update `_topKeyLine`
 and `_assertInvariant` in `arb.dart` to match, don't hand-patch the files.
 
-After any write command (`add`, `set`, `set-meta`, `rename`, `delete`), run
-`make translations` to regenerate the Dart localizations — each changes either
-the key set or a generated string. Run `fvm dart run tools/arb.dart help` for the
-full reference.
+After any write command (`add`, `set`, `set-meta`, `rename`, `delete`,
+`unmerge-translation`), run `make translations` to regenerate the Dart
+localizations — each changes either the key set or a generated string. Run
+`dart run tools/arb.dart help` for the full reference.
 
 > First run is slow (cold package build hooks); subsequent runs are sub-second.

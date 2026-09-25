@@ -20,6 +20,8 @@ import 'dart:io';
 
 const arbDir = 'localization';
 const templateLocale = 'en';
+const reviewFormat = 'bull-translation-review-v1';
+const reviewOutputDir = 'build/translation-review';
 
 void main(List<String> args) {
   if (args.isEmpty) {
@@ -64,6 +66,12 @@ void main(List<String> args) {
         _cmdDelete(rest);
       case 'validate':
         _cmdValidate(rest);
+      case 'merge-translation':
+        _cmdMergeTranslation(rest);
+      case 'check-translation-review':
+        _cmdCheckTranslationReview(rest);
+      case 'unmerge-translation':
+        _cmdUnmergeTranslation(rest);
       case 'help':
       case '-h':
       case '--help':
@@ -685,6 +693,354 @@ void _cmdValidate(List<String> args) {
   if (!ok) exit(1);
 }
 
+void _cmdMergeTranslation(List<String> args) {
+  final paths = _translationReviewPaths(args);
+  if (File(paths.reviewFile).existsSync() && !_flag(args, '--overwrite')) {
+    throw ArbException(
+      'Review file ${paths.reviewFile} already exists. Use --overwrite to '
+      'replace it.',
+    );
+  }
+
+  final sources = _loadTranslationSources(paths);
+  final review = <String, dynamic>{
+    '@@review': {
+      'format': reviewFormat,
+      'baseLocale': paths.baseLocale,
+      'secondaryLocale': paths.secondaryLocale,
+    },
+  };
+
+  for (final key in _realKeysInOrder(sources.base)) {
+    review['${key}_${paths.baseLocale}'] = sources.base[key];
+    review['${key}_${paths.secondaryLocale}'] = sources.secondary[key];
+    final metadata = sources.base['@$key'];
+    if (metadata != null) review['@$key'] = metadata;
+  }
+
+  _writeReviewFile(paths.reviewFile, review);
+  print(
+    'translation review: ${paths.baseLocale}/${paths.secondaryLocale}, '
+    '${_realKeysInOrder(sources.base).length} messages, ${paths.reviewFile}',
+  );
+}
+
+void _cmdCheckTranslationReview(List<String> args) {
+  final paths = _translationReviewPaths(args);
+  final validation = _validateTranslationReview(paths);
+  print(
+    'translation review: ok (${validation.reviewedSecondaryValues.length} '
+    'messages for ${paths.secondaryLocale})',
+  );
+}
+
+void _cmdUnmergeTranslation(List<String> args) {
+  final paths = _translationReviewPaths(args);
+  final validation = _validateTranslationReview(paths);
+  var applied = 0;
+  for (final entry in validation.reviewedSecondaryValues.entries) {
+    if (validation.secondary[entry.key] == entry.value) continue;
+    _replaceValue(paths.secondaryFile, entry.key, entry.value);
+    applied++;
+  }
+
+  print(
+    'translation review: applied $applied value(s) to ${paths.secondaryFile}',
+  );
+}
+
+class _TranslationReviewPaths {
+  final String baseLocale;
+  final String secondaryLocale;
+  final String baseFile;
+  final String secondaryFile;
+  final String reviewFile;
+
+  _TranslationReviewPaths({
+    required this.baseLocale,
+    required this.secondaryLocale,
+    required this.baseFile,
+    required this.secondaryFile,
+    required this.reviewFile,
+  });
+}
+
+class _TranslationReviewValidation {
+  final Map<String, dynamic> secondary;
+  final Map<String, String> reviewedSecondaryValues;
+
+  _TranslationReviewValidation({
+    required this.secondary,
+    required this.reviewedSecondaryValues,
+  });
+}
+
+_TranslationReviewPaths _translationReviewPaths(List<String> args) {
+  final positional = _positional(args);
+  if (positional.isEmpty || positional.length > 2) {
+    throw UsageException(
+      'Translation-review commands require SECONDARY_LOCALE, optionally '
+      'preceded by BASE_LOCALE.',
+    );
+  }
+
+  final baseLocale = positional.length == 1 ? templateLocale : positional[0];
+  final secondaryLocale = positional.last;
+  _validateReviewLocale(baseLocale, 'Base');
+  _validateReviewLocale(secondaryLocale, 'Secondary');
+  if (baseLocale == secondaryLocale) {
+    throw UsageException('Base and secondary locales must be different.');
+  }
+
+  final baseFile = _option(args, '--base-file') ?? _fileFor(baseLocale);
+  final secondaryFile =
+      _option(args, '--secondary-file') ?? _fileFor(secondaryLocale);
+  final reviewFile =
+      _option(args, '--merged-file') ??
+      '$reviewOutputDir/app_${baseLocale}_$secondaryLocale.json';
+  _validateReviewFilePath(reviewFile);
+
+  return _TranslationReviewPaths(
+    baseLocale: baseLocale,
+    secondaryLocale: secondaryLocale,
+    baseFile: baseFile,
+    secondaryFile: secondaryFile,
+    reviewFile: reviewFile,
+  );
+}
+
+void _validateReviewLocale(String locale, String role) {
+  if (!RegExp(r'^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$').hasMatch(locale)) {
+    throw UsageException(
+      '$role locale "$locale" must be a language tag suitable for an ARB '
+      'filename, such as en, de, pt_BR, or hi_Latn.',
+    );
+  }
+}
+
+void _validateReviewFilePath(String reviewFile) {
+  final normalizedReview = File(
+    reviewFile,
+  ).absolute.uri.normalizePath().toFilePath();
+  final normalizedArbDir = Directory(
+    arbDir,
+  ).absolute.uri.normalizePath().toFilePath();
+  final arbPathPrefix = normalizedArbDir.endsWith(Platform.pathSeparator)
+      ? normalizedArbDir
+      : '$normalizedArbDir${Platform.pathSeparator}';
+  if (normalizedReview == normalizedArbDir ||
+      normalizedReview.startsWith(arbPathPrefix)) {
+    throw UsageException(
+      'Review files must live outside $arbDir so Flutter cannot treat them as '
+      'localization input.',
+    );
+  }
+}
+
+({Map<String, dynamic> base, Map<String, dynamic> secondary})
+_loadTranslationSources(_TranslationReviewPaths paths) {
+  _assertInvariant(paths.baseFile);
+  _assertInvariant(paths.secondaryFile);
+  final base = _readMap(paths.baseFile);
+  final secondary = _readMap(paths.secondaryFile);
+  _validateLocaleMarker(paths.baseFile, base, paths.baseLocale);
+  _validateLocaleMarker(paths.secondaryFile, secondary, paths.secondaryLocale);
+
+  for (final key in _realKeysInOrder(base)) {
+    final baseValue = base[key];
+    if (baseValue is! String) {
+      throw ArbException(
+        'Value for "$key" in ${paths.baseFile} is not a string.',
+      );
+    }
+    final secondaryValue = secondary[key];
+    if (secondaryValue == null) {
+      throw ArbException(
+        'Key "$key" is missing from ${paths.secondaryFile}. Synchronize the '
+        'locale before creating a review.',
+      );
+    }
+    if (secondaryValue is! String) {
+      throw ArbException(
+        'Value for "$key" in ${paths.secondaryFile} is not a string.',
+      );
+    }
+  }
+
+  return (base: base, secondary: secondary);
+}
+
+_TranslationReviewValidation _validateTranslationReview(
+  _TranslationReviewPaths paths,
+) {
+  final sources = _loadTranslationSources(paths);
+  _assertInvariant(paths.reviewFile);
+  final review = _readMap(paths.reviewFile);
+  _validateReviewHeader(review, paths);
+
+  final expectedKeys = <String>['@@review'];
+  final reviewedSecondaryValues = <String, String>{};
+  for (final key in _realKeysInOrder(sources.base)) {
+    final baseReviewKey = '${key}_${paths.baseLocale}';
+    final secondaryReviewKey = '${key}_${paths.secondaryLocale}';
+    expectedKeys.add(baseReviewKey);
+    expectedKeys.add(secondaryReviewKey);
+
+    if (review[baseReviewKey] != sources.base[key]) {
+      throw ArbException(
+        'Base value "$baseReviewKey" in ${paths.reviewFile} no longer matches '
+        '${paths.baseFile}. Regenerate the review before importing.',
+      );
+    }
+
+    final reviewedSecondaryValue = review[secondaryReviewKey];
+    if (reviewedSecondaryValue is! String) {
+      throw ArbException(
+        'Review value "$secondaryReviewKey" in ${paths.reviewFile} must be a '
+        'string.',
+      );
+    }
+    _validateMatchingPlaceholders(
+      sources.base[key] as String,
+      reviewedSecondaryValue,
+      key,
+      paths,
+    );
+    reviewedSecondaryValues[key] = reviewedSecondaryValue;
+
+    final metadata = sources.base['@$key'];
+    if (metadata != null) {
+      expectedKeys.add('@$key');
+      if (!_jsonEquals(review['@$key'], metadata)) {
+        throw ArbException(
+          'Metadata "@$key" in ${paths.reviewFile} no longer matches '
+          '${paths.baseFile}. Regenerate the review before importing.',
+        );
+      }
+    }
+  }
+  _validateReviewKeys(review.keys.toList(), expectedKeys, paths.reviewFile);
+
+  return _TranslationReviewValidation(
+    secondary: sources.secondary,
+    reviewedSecondaryValues: reviewedSecondaryValues,
+  );
+}
+
+void _validateReviewHeader(
+  Map<String, dynamic> review,
+  _TranslationReviewPaths paths,
+) {
+  final header = review['@@review'];
+  if (header is! Map ||
+      header['format'] != reviewFormat ||
+      header['baseLocale'] != paths.baseLocale ||
+      header['secondaryLocale'] != paths.secondaryLocale ||
+      header.length != 3) {
+    throw ArbException(
+      '${paths.reviewFile} is not a $reviewFormat document for '
+      '${paths.baseLocale}/${paths.secondaryLocale}.',
+    );
+  }
+}
+
+void _validateMatchingPlaceholders(
+  String baseValue,
+  String secondaryValue,
+  String key,
+  _TranslationReviewPaths paths,
+) {
+  final basePlaceholders = _topLevelPlaceholders(baseValue);
+  final secondaryPlaceholders = _topLevelPlaceholders(secondaryValue);
+  if (!basePlaceholders.containsAll(secondaryPlaceholders) ||
+      !secondaryPlaceholders.containsAll(basePlaceholders)) {
+    throw ArbException(
+      'Review value "${key}_${paths.secondaryLocale}" in ${paths.reviewFile} '
+      'does not have the same placeholders as "${key}_${paths.baseLocale}".',
+    );
+  }
+}
+
+void _validateReviewKeys(
+  List<String> actualKeys,
+  List<String> expectedKeys,
+  String reviewFile,
+) {
+  if (actualKeys.length != expectedKeys.length) {
+    throw ArbException(
+      '$reviewFile has unexpected or missing review entries. Regenerate the '
+      'review before importing.',
+    );
+  }
+  for (var index = 0; index < expectedKeys.length; index++) {
+    if (actualKeys[index] != expectedKeys[index]) {
+      throw ArbException(
+        '$reviewFile has an unexpected review entry at position ${index + 1}. '
+        'Regenerate the review before importing.',
+      );
+    }
+  }
+}
+
+bool _jsonEquals(Object? first, Object? second) {
+  if (first is Map && second is Map) {
+    if (first.length != second.length) return false;
+    for (final entry in first.entries) {
+      if (!second.containsKey(entry.key) ||
+          !_jsonEquals(entry.value, second[entry.key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (first is List && second is List) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (!_jsonEquals(first[index], second[index])) return false;
+    }
+    return true;
+  }
+  return first == second;
+}
+
+void _validateLocaleMarker(
+  String file,
+  Map<String, dynamic> values,
+  String locale,
+) {
+  final declaredLocale = values['@@locale'];
+  if (declaredLocale != null && declaredLocale != locale) {
+    throw ArbException(
+      '$file declares locale "$declaredLocale", not the requested "$locale".',
+    );
+  }
+}
+
+Iterable<String> _realKeysInOrder(Map<String, dynamic> map) sync* {
+  for (final entry in map.entries) {
+    if (!_isMetaKey(entry.key)) yield entry.key;
+  }
+}
+
+void _writeReviewFile(String reviewFile, Map<String, dynamic> review) {
+  final contents = '${const JsonEncoder.withIndent('  ').convert(review)}\n';
+  try {
+    jsonDecode(contents);
+  } catch (error) {
+    throw ArbException(
+      'Aborting write to $reviewFile: the review would produce invalid JSON '
+      '($error). This is a bug in the tool.',
+    );
+  }
+  if (_dryRun) {
+    stderr.writeln('[dry-run] would write ${_basename(reviewFile)}');
+    return;
+  }
+  File(reviewFile).parent.createSync(recursive: true);
+  File(reviewFile).writeAsStringSync(contents);
+  _invalidateCache(reviewFile);
+}
+
 // ---------------------------------------------------------------------------
 // File / locale helpers
 // ---------------------------------------------------------------------------
@@ -1090,6 +1446,9 @@ const _valueOptions = {
   '--translations-file',
   '--description',
   '--placeholders',
+  '--base-file',
+  '--secondary-file',
+  '--merged-file',
 };
 const _booleanFlags = {'--list', '--dry-run', '--overwrite'};
 
@@ -1126,6 +1485,24 @@ const _commandOptions = <String, Set<String>>{
   'validate': {},
   'audit-identical': {'--locale', '--list'},
   'audit-placeholders': {'--locale', '--list'},
+  'merge-translation': {
+    '--base-file',
+    '--secondary-file',
+    '--merged-file',
+    '--dry-run',
+    '--overwrite',
+  },
+  'check-translation-review': {
+    '--base-file',
+    '--secondary-file',
+    '--merged-file',
+  },
+  'unmerge-translation': {
+    '--base-file',
+    '--secondary-file',
+    '--merged-file',
+    '--dry-run',
+  },
 };
 
 // Set once in main from the parsed args; read by _editLines to skip the write.
@@ -1329,7 +1706,16 @@ Read commands:
   validate
       Parse every .arb file and confirm the 2-space layout invariant.
 
+  check-translation-review [BASE_LOCALE] SECONDARY_LOCALE
+      [--base-file PATH] [--secondary-file PATH] [--merged-file PATH]
+      Validate a side-by-side review without changing any file.
+
 Write commands (surgical; other keys are left byte-for-byte unchanged):
+  merge-translation [BASE_LOCALE] SECONDARY_LOCALE
+      [--base-file PATH] [--secondary-file PATH] [--merged-file PATH]
+      Create a side-by-side JSON review. Base locale defaults to en.
+      Refuses to overwrite an existing review unless --overwrite is passed.
+
   add KEY --translations '{"en":"...","fr":"..."}'
           [--translations-file PATH] [--description TEXT]
           [--placeholders '{"count":{"type":"int"}}']
@@ -1356,6 +1742,10 @@ Write commands (surgical; other keys are left byte-for-byte unchanged):
 
   delete KEY
       Remove KEY (and its @KEY metadata) from every locale file.
+
+  unmerge-translation [BASE_LOCALE] SECONDARY_LOCALE
+      [--base-file PATH] [--secondary-file PATH] [--merged-file PATH]
+      Validate then apply reviewed secondary-locale values in place.
 
 Every write command accepts --dry-run: it runs all checks and reports which
 files would change, without writing anything.

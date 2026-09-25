@@ -75,6 +75,17 @@ void main() {
       '  "greeting": "Bonjour"\n'
       '}\n';
 
+  const frCompleteTemplate =
+      '{\n'
+      '  "greeting": "Bonjour",\n'
+      '  "@greeting": {\n'
+      '    "description": "target-only metadata"\n'
+      '  },\n'
+      '  "count": "{n, plural, =1{1 article} other{{n} articles}}",\n'
+      '  "farewell": "Au revoir",\n'
+      '  "regionalExtra": "extra"\n'
+      '}\n';
+
   group('validate', () {
     test('accepts well-formed files', () {
       writeLocale('en', enTemplate);
@@ -256,6 +267,161 @@ void main() {
       final r = run(['rename', 'greeting', 'farewell']);
       expect(r.exitCode, 1);
       expect(readLocale('en'), before);
+    });
+  });
+
+  group('translation review', () {
+    test(
+      'validates then applies reviewed values without changing other bytes',
+      () {
+        writeLocale('en', enTemplate);
+        writeLocale('fr', frCompleteTemplate);
+        final targetBefore = readLocale('fr');
+        final reviewFile = File(p.join(tmp.path, 'review.json'));
+
+        final merge = run([
+          'merge-translation',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+        ]);
+        expect(merge.exitCode, 0, reason: merge.stderr.toString());
+
+        final review =
+            jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
+        expect(review.keys, [
+          '@@review',
+          'greeting_en',
+          'greeting_fr',
+          '@greeting',
+          'count_en',
+          'count_fr',
+          '@count',
+          'farewell_en',
+          'farewell_fr',
+        ]);
+        review['greeting_fr'] = 'Salut';
+        reviewFile.writeAsStringSync(
+          '${const JsonEncoder.withIndent('  ').convert(review)}\n',
+        );
+
+        final check = run([
+          'check-translation-review',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+        ]);
+        expect(check.exitCode, 0, reason: check.stderr.toString());
+
+        final dryRun = run([
+          'unmerge-translation',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+          '--dry-run',
+        ]);
+        expect(dryRun.exitCode, 0, reason: dryRun.stderr.toString());
+        expect(readLocale('fr'), targetBefore);
+
+        final unmerge = run([
+          'unmerge-translation',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+        ]);
+        expect(unmerge.exitCode, 0, reason: unmerge.stderr.toString());
+        expect(
+          readLocale('fr'),
+          targetBefore.replaceFirst(
+            '"greeting": "Bonjour"',
+            '"greeting": "Salut"',
+          ),
+        );
+      },
+    );
+
+    test('rejects a stale base value before touching the target locale', () {
+      writeLocale('en', enTemplate);
+      writeLocale('fr', frCompleteTemplate);
+      final targetBefore = readLocale('fr');
+      final reviewFile = File(p.join(tmp.path, 'review.json'));
+      final merge = run([
+        'merge-translation',
+        'en',
+        'fr',
+        '--merged-file',
+        reviewFile.path,
+      ]);
+      expect(merge.exitCode, 0, reason: merge.stderr.toString());
+
+      File(p.join(tmp.path, 'localization', 'app_en.arb')).writeAsStringSync(
+        enTemplate.replaceFirst('"greeting": "Hello"', '"greeting": "Hi"'),
+      );
+      final unmerge = run([
+        'unmerge-translation',
+        'en',
+        'fr',
+        '--merged-file',
+        reviewFile.path,
+      ]);
+      expect(unmerge.exitCode, 1);
+      expect(readLocale('fr'), targetBefore);
+    });
+
+    test(
+      'rejects a reviewed placeholder mismatch before touching the target',
+      () {
+        writeLocale('en', enTemplate);
+        writeLocale('fr', frCompleteTemplate);
+        final targetBefore = readLocale('fr');
+        final reviewFile = File(p.join(tmp.path, 'review.json'));
+        final merge = run([
+          'merge-translation',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+        ]);
+        expect(merge.exitCode, 0, reason: merge.stderr.toString());
+
+        final review =
+            jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
+        review['count_fr'] = '{wrong}';
+        reviewFile.writeAsStringSync(
+          '${const JsonEncoder.withIndent('  ').convert(review)}\n',
+        );
+
+        final unmerge = run([
+          'unmerge-translation',
+          'en',
+          'fr',
+          '--merged-file',
+          reviewFile.path,
+        ]);
+        expect(unmerge.exitCode, 1);
+        expect(readLocale('fr'), targetBefore);
+      },
+    );
+
+    test('accepts locale tags in review keys', () {
+      writeLocale('en', enTemplate);
+      writeLocale('pt_BR', frCompleteTemplate);
+      final reviewFile = File(p.join(tmp.path, 'review.json'));
+
+      final merge = run([
+        'merge-translation',
+        'pt_BR',
+        '--merged-file',
+        reviewFile.path,
+      ]);
+      expect(merge.exitCode, 0, reason: merge.stderr.toString());
+      final review =
+          jsonDecode(reviewFile.readAsStringSync()) as Map<String, dynamic>;
+      expect(review['greeting_pt_BR'], 'Bonjour');
     });
   });
 
